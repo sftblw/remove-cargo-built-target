@@ -1,0 +1,9 @@
+[bundle]
+identifier = "moe.sftblw.remove-cargo-built-target"
+publisher = "sftblw"
+
+[application]
+
+default_platform = "desktop"
+name = "Remove Cargo Built Target"
+title = "Remove Cargo Built Target"

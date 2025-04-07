@@ -1,0 +1,31 @@
+[package]
+name = "remove-cargo-built-target"
+version = "0.1.0"
+edition = "2024"
+authors = ["sftblw <ccwpc@hanmail.net>"]
+description = "Remove Cargo Built Target"
+license = "Unlicense OR MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "~1"
+# async-walkdir = "~2.1.0"
+dioxus = { version = "~0.6", features = ["desktop"] }
+flume = "0.11.1"
+futures = "0.3.31"
+open = "5.3.2"
+rfd = "0.15.3"
+tokio = { version = "~1", features = ["full"] }
+walkdir = "2.5.0"
+
+[profile]
+
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+
+[profile.server-dev]
+inherits = "dev"
+
+[profile.android-dev]
+inherits = "dev"
