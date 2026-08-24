@@ -22,6 +22,13 @@ struct CleanupTargetInfo {
     error_content: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct DiscoveredCleanupTarget {
+    generation: u64,
+    path_info: CleanupTargetInfo,
+}
+
+
 
 fn can_replace_cleanup_targets(project_paths: &BTreeMap<PathBuf, CleanupTargetInfo>) -> bool {
     !project_paths.values().any(|target_info| target_info.is_removing)
@@ -60,13 +67,18 @@ fn record_cleanup_result(
 
 fn record_scanned_cleanup_target(
     project_paths: &mut BTreeMap<PathBuf, CleanupTargetInfo>,
-    path_info: CleanupTargetInfo,
+    current_generation: u64,
+    discovered_target: DiscoveredCleanupTarget,
 ) {
+    if discovered_target.generation != current_generation {
+        return;
+    }
+
+    let path_info = discovered_target.path_info;
     let artifact_path = path_info.target.artifact_path.clone();
-    if project_paths
-        .get(&artifact_path)
-        .is_some_and(|existing| existing.is_removing || existing.is_removed)
-    {
+    if project_paths.get(&artifact_path).is_some_and(|existing| {
+        existing.is_removing || existing.is_removed || existing.error_content.is_some()
+    }) {
         return;
     }
 
@@ -75,9 +87,9 @@ fn record_scanned_cleanup_target(
 
 
 static FOUND_CHANNEL: LazyLock<(
-    flume::Sender<CleanupTargetInfo>,
-    flume::Receiver<CleanupTargetInfo>,
-)> = LazyLock::new(|| flume::unbounded::<CleanupTargetInfo>());
+    flume::Sender<DiscoveredCleanupTarget>,
+    flume::Receiver<DiscoveredCleanupTarget>,
+)> = LazyLock::new(|| flume::unbounded::<DiscoveredCleanupTarget>());
 
 static ITERATING_CHANNEL: LazyLock<(flume::Sender<PathBuf>, flume::Receiver<PathBuf>)> =
     LazyLock::new(|| flume::unbounded::<PathBuf>());
@@ -191,14 +203,64 @@ mod tests {
             (removed_path.clone(), removed.clone()),
         ]);
 
-        record_scanned_cleanup_target(&mut project_paths, target("claimed/target"));
-        record_scanned_cleanup_target(&mut project_paths, target("removed/target"));
-        record_scanned_cleanup_target(&mut project_paths, target("discovered/target"));
+        record_scanned_cleanup_target(
+            &mut project_paths,
+            1,
+            DiscoveredCleanupTarget {
+                generation: 1,
+                path_info: target("claimed/target"),
+            },
+        );
+        record_scanned_cleanup_target(
+            &mut project_paths,
+            1,
+            DiscoveredCleanupTarget {
+                generation: 1,
+                path_info: target("removed/target"),
+            },
+        );
+        record_scanned_cleanup_target(
+            &mut project_paths,
+            1,
+            DiscoveredCleanupTarget {
+                generation: 1,
+                path_info: target("discovered/target"),
+            },
+        );
 
         assert_eq!(project_paths[&claimed_path], claimed);
         assert_eq!(project_paths[&removed_path], removed);
         assert!(project_paths.contains_key(&discovered_path));
     }
+    #[test]
+    fn stale_scan_results_are_discarded_and_current_results_preserve_failed_state() {
+        let failed_path = PathBuf::from("failed/target");
+        let stale_path = PathBuf::from("stale/target");
+        let mut failed = target("failed/target");
+        failed.error_content = Some("permission denied".to_owned());
+        let mut project_paths = BTreeMap::from([(failed_path.clone(), failed.clone())]);
+
+        record_scanned_cleanup_target(
+            &mut project_paths,
+            2,
+            DiscoveredCleanupTarget {
+                generation: 1,
+                path_info: target("stale/target"),
+            },
+        );
+        record_scanned_cleanup_target(
+            &mut project_paths,
+            2,
+            DiscoveredCleanupTarget {
+                generation: 2,
+                path_info: target("failed/target"),
+            },
+        );
+
+        assert!(!project_paths.contains_key(&stale_path));
+        assert_eq!(project_paths[&failed_path], failed);
+    }
+
 }
 
 #[component]
@@ -212,6 +274,7 @@ fn App() -> Element {
     };
 
     let mut project_paths = use_signal(BTreeMap::<PathBuf, CleanupTargetInfo>::new);
+    let mut scan_generation = use_signal(|| 0_u64);
     let removed_paths = use_memo(move || {
         project_paths()
             .iter()
@@ -256,9 +319,14 @@ fn App() -> Element {
     use_future(move || {
         async move {
             let found_rx = FOUND_CHANNEL.1.clone();
-            while let Ok(path_info) = found_rx.recv_async().await {
+            while let Ok(discovered_target) = found_rx.recv_async().await {
+                let current_generation = scan_generation();
                 let mut project_paths_lock = project_paths.write();
-                record_scanned_cleanup_target(&mut project_paths_lock, path_info);
+                record_scanned_cleanup_target(
+                    &mut project_paths_lock,
+                    current_generation,
+                    discovered_target,
+                );
             }
         }
     });
@@ -280,6 +348,8 @@ fn App() -> Element {
         let target_path = base_path().clone();
         let found_tx = FOUND_CHANNEL.0.clone();
         let iterating_tx = ITERATING_CHANNEL.0.clone();
+        let next_scan_generation = scan_generation().wrapping_add(1);
+        scan_generation.set(next_scan_generation);
         clear_target_paths();
 
         let cur_iter_task_created = tokio::task::spawn_blocking(move || {
@@ -296,7 +366,10 @@ fn App() -> Element {
                     is_removing: false,
                     error_content: None,
                 };
-                let Ok(()) = found_tx.send(path_info) else {
+                let Ok(()) = found_tx.send(DiscoveredCleanupTarget {
+                    generation: next_scan_generation,
+                    path_info,
+                }) else {
                     eprintln!("Failed to send found path");
                     break;
                 };
