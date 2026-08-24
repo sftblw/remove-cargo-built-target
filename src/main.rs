@@ -23,6 +23,10 @@ struct CleanupTargetInfo {
 }
 
 
+fn can_replace_cleanup_targets(project_paths: &BTreeMap<PathBuf, CleanupTargetInfo>) -> bool {
+    !project_paths.values().any(|target_info| target_info.is_removing)
+}
+
 fn claim_cleanup_candidates(
     project_paths: &mut BTreeMap<PathBuf, CleanupTargetInfo>,
 ) -> Vec<(PathBuf, CleanupTargetInfo)> {
@@ -113,6 +117,24 @@ mod tests {
         assert!(claimed[0].1.is_removing);
         assert!(project_paths[&path].is_removing);
         assert!(claim_cleanup_candidates(&mut project_paths).is_empty());
+    }
+
+    #[test]
+    fn scan_replacement_waits_for_in_flight_cleanup() {
+        let path = PathBuf::from("project/target");
+        let target = target("project/target");
+        let mut project_paths = BTreeMap::from([(path.clone(), target)]);
+
+        assert!(can_replace_cleanup_targets(&project_paths));
+        let _ = claim_cleanup_candidates(&mut project_paths);
+        assert!(!can_replace_cleanup_targets(&project_paths));
+
+        record_cleanup_result(
+            project_paths.get_mut(&path).unwrap(),
+            Err("permission denied".to_owned()),
+        );
+
+        assert!(can_replace_cleanup_targets(&project_paths));
     }
 
     #[test]
@@ -212,6 +234,10 @@ fn App() -> Element {
     });
 
     let mut find_paths = move || {
+        if !can_replace_cleanup_targets(&project_paths()) {
+            return;
+        }
+
         let target_path = base_path().clone();
         let found_tx = FOUND_CHANNEL.0.clone();
         let iterating_tx = ITERATING_CHANNEL.0.clone();
@@ -294,6 +320,7 @@ fn App() -> Element {
 
                 button {
                     style: "margin: 10px; padding: 10px; border-radius: 5px; background-color: #007bff; color: white;",
+                    disabled: !can_replace_cleanup_targets(&project_paths()),
                     onclick: move |_| {
                         find_paths();
                     },
