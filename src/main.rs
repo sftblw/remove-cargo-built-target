@@ -21,6 +21,15 @@ struct CleanupTargetInfo {
     error_content: Option<String>,
 }
 
+fn cleanup_candidates(
+    project_paths: BTreeMap<PathBuf, CleanupTargetInfo>,
+) -> impl Iterator<Item = (PathBuf, CleanupTargetInfo)> {
+    project_paths
+        .into_iter()
+        .filter(|(_, target_info)| !target_info.is_removed)
+}
+
+
 static FOUND_CHANNEL: LazyLock<(
     flume::Sender<CleanupTargetInfo>,
     flume::Receiver<CleanupTargetInfo>,
@@ -28,6 +37,42 @@ static FOUND_CHANNEL: LazyLock<(
 
 static ITERATING_CHANNEL: LazyLock<(flume::Sender<PathBuf>, flume::Receiver<PathBuf>)> =
     LazyLock::new(|| flume::unbounded::<PathBuf>());
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target(path: &str) -> CleanupTargetInfo {
+        let artifact_path = PathBuf::from(path);
+        CleanupTargetInfo {
+            target: CleanupTarget {
+                kind: CleanupTargetKind::Target,
+                project_path: artifact_path.parent().unwrap().to_path_buf(),
+                artifact_path,
+            },
+            is_removed: false,
+            error_content: None,
+        }
+    }
+
+    #[test]
+    fn cleanup_candidates_exclude_already_removed_targets() {
+        let active_path = PathBuf::from("active/target");
+        let removed_path = PathBuf::from("removed/target");
+        let active = target("active/target");
+        let mut removed = target("removed/target");
+        removed.is_removed = true;
+        let project_paths = BTreeMap::from([
+            (active_path.clone(), active.clone()),
+            (removed_path, removed),
+        ]);
+
+        assert_eq!(
+            cleanup_candidates(project_paths).collect::<Vec<_>>(),
+            vec![(active_path, active)]
+        );
+    }
+}
 
 #[component]
 fn App() -> Element {
@@ -60,7 +105,7 @@ fn App() -> Element {
 
     let remove_paths = move || {
         spawn(async move {
-            for (path_key, target_info) in project_paths() {
+            for (path_key, target_info) in cleanup_candidates(project_paths()) {
                 spawn(async move {
                     let removal_result = remove_cleanup_target(&target_info.target).await;
 
