@@ -76,17 +76,16 @@ fn should_descend(entry: &DirEntry) -> bool {
         return false;
     }
 
-    if entry.depth() == 0 {
-        return true;
-    }
+    let is_selected_root = entry.depth() == 0;
 
     let Some(file_name) = entry.path().file_name() else {
         return true;
     };
 
-    if file_name
-        .to_str()
-        .is_some_and(|file_name| file_name.starts_with('.'))
+    if !is_selected_root
+        && file_name
+            .to_str()
+            .is_some_and(|file_name| file_name.starts_with('.'))
     {
         return false;
     }
@@ -198,6 +197,27 @@ mod tests {
             target.kind == CleanupTargetKind::NodeModules
                 && target.artifact_path == hybrid.join("node_modules")
         }));
+    }
+
+    #[test]
+    fn does_not_traverse_an_excluded_selected_root() {
+        let temp = tempdir().unwrap();
+
+        for excluded_root_name in ["target", "node_modules"] {
+            let excluded_root = directory(temp.path(), excluded_root_name);
+            let nested_project = directory(&excluded_root, "nested-project");
+            fs::write(
+                nested_project.join("Cargo.toml"),
+                "[package]\nname = \"nested-project\"\n",
+            )
+            .unwrap();
+            directory(&nested_project, "target");
+
+            assert!(
+                discover_cleanup_targets(&excluded_root).is_empty(),
+                "must not traverse selected {excluded_root_name} directory"
+            );
+        }
     }
 
     #[tokio::test]
