@@ -18,15 +18,40 @@ fn main() {
 struct CleanupTargetInfo {
     target: CleanupTarget,
     is_removed: bool,
+    is_removing: bool,
     error_content: Option<String>,
 }
 
-fn cleanup_candidates(
-    project_paths: BTreeMap<PathBuf, CleanupTargetInfo>,
-) -> impl Iterator<Item = (PathBuf, CleanupTargetInfo)> {
+
+fn claim_cleanup_candidates(
+    project_paths: &mut BTreeMap<PathBuf, CleanupTargetInfo>,
+) -> Vec<(PathBuf, CleanupTargetInfo)> {
     project_paths
-        .into_iter()
-        .filter(|(_, target_info)| !target_info.is_removed)
+        .iter_mut()
+        .filter_map(|(path, target_info)| {
+            (!target_info.is_removed && !target_info.is_removing).then(|| {
+                target_info.is_removing = true;
+                (path.clone(), target_info.clone())
+            })
+        })
+        .collect()
+}
+
+fn record_cleanup_result(
+    target_info: &mut CleanupTargetInfo,
+    removal_result: Result<(), String>,
+) {
+    target_info.is_removing = false;
+    match removal_result {
+        Ok(()) => {
+            target_info.is_removed = true;
+            target_info.error_content = None;
+        }
+        Err(error) => {
+            target_info.is_removed = false;
+            target_info.error_content = Some(error);
+        }
+    }
 }
 
 
@@ -51,25 +76,66 @@ mod tests {
                 artifact_path,
             },
             is_removed: false,
+            is_removing: false,
             error_content: None,
         }
     }
 
     #[test]
-    fn cleanup_candidates_exclude_already_removed_targets() {
+    fn cleanup_claims_exclude_already_removed_targets() {
         let active_path = PathBuf::from("active/target");
         let removed_path = PathBuf::from("removed/target");
         let active = target("active/target");
         let mut removed = target("removed/target");
         removed.is_removed = true;
-        let project_paths = BTreeMap::from([
-            (active_path.clone(), active.clone()),
+        let mut project_paths = BTreeMap::from([
+            (active_path.clone(), active),
             (removed_path, removed),
         ]);
 
+        let claimed = claim_cleanup_candidates(&mut project_paths);
+
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].0, active_path);
+        assert!(claimed[0].1.is_removing);
+    }
+
+    #[test]
+    fn cleanup_claims_prevent_concurrent_scheduling() {
+        let path = PathBuf::from("project/target");
+        let target = target("project/target");
+        let mut project_paths = BTreeMap::from([(path.clone(), target)]);
+
+        let claimed = claim_cleanup_candidates(&mut project_paths);
+
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].0, path);
+        assert!(claimed[0].1.is_removing);
+        assert!(project_paths[&path].is_removing);
+        assert!(claim_cleanup_candidates(&mut project_paths).is_empty());
+    }
+
+    #[test]
+    fn failed_cleanup_releases_its_claim_for_retry() {
+        let path = PathBuf::from("project/target");
+        let target = target("project/target");
+        let mut project_paths = BTreeMap::from([(path.clone(), target)]);
+
+        let _ = claim_cleanup_candidates(&mut project_paths);
+        record_cleanup_result(
+            project_paths.get_mut(&path).unwrap(),
+            Err("permission denied".to_owned()),
+        );
+        assert!(!project_paths[&path].is_removing);
+
+        let retried = claim_cleanup_candidates(&mut project_paths);
+
+        assert_eq!(retried.len(), 1);
+        assert_eq!(retried[0].0, path.clone());
+        assert!(retried[0].1.is_removing);
         assert_eq!(
-            cleanup_candidates(project_paths).collect::<Vec<_>>(),
-            vec![(active_path, active)]
+            project_paths[&path].error_content.as_deref(),
+            Some("permission denied")
         );
     }
 }
@@ -103,28 +169,24 @@ fn App() -> Element {
         project_paths.set(new_paths);
     };
 
-    let remove_paths = move || {
-        spawn(async move {
-            for (path_key, target_info) in cleanup_candidates(project_paths()) {
-                spawn(async move {
-                    let removal_result = remove_cleanup_target(&target_info.target).await;
+    let mut remove_paths = move || {
+        let cleanup_targets = {
+            let mut target_paths_lock = project_paths.write();
+            claim_cleanup_candidates(&mut target_paths_lock)
+        };
 
-                    let mut target_paths_lock = project_paths.write();
-                    if let Some(info) = target_paths_lock.get_mut(&path_key) {
-                        match removal_result {
-                            Ok(()) => {
-                                info.is_removed = true;
-                                info.error_content = None;
-                            }
-                            Err(error) => {
-                                info.is_removed = false;
-                                info.error_content = Some(error.to_string());
-                            }
-                        }
-                    }
-                });
-            }
-        });
+        for (path_key, target_info) in cleanup_targets {
+            spawn(async move {
+                let removal_result = remove_cleanup_target(&target_info.target)
+                    .await
+                    .map_err(|error| error.to_string());
+
+                let mut target_paths_lock = project_paths.write();
+                if let Some(info) = target_paths_lock.get_mut(&path_key) {
+                    record_cleanup_result(info, removal_result);
+                }
+            });
+        }
     };
 
     let mut current_iterating_path = use_signal(|| Option::<PathBuf>::None);
@@ -166,6 +228,7 @@ fn App() -> Element {
                 let path_info = CleanupTargetInfo {
                     target,
                     is_removed: false,
+                    is_removing: false,
                     error_content: None,
                 };
                 let Ok(()) = found_tx.send(path_info) else {
