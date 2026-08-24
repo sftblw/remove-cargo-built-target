@@ -18,6 +18,9 @@ rfd = "0.15.3"
 tokio = { version = "~1", features = ["full"] }
 walkdir = "2.5.0"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile]
 
 [profile.wasm-dev]
