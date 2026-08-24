@@ -58,6 +58,21 @@ fn record_cleanup_result(
     }
 }
 
+fn record_scanned_cleanup_target(
+    project_paths: &mut BTreeMap<PathBuf, CleanupTargetInfo>,
+    path_info: CleanupTargetInfo,
+) {
+    let artifact_path = path_info.target.artifact_path.clone();
+    if project_paths
+        .get(&artifact_path)
+        .is_some_and(|existing| existing.is_removing || existing.is_removed)
+    {
+        return;
+    }
+
+    project_paths.insert(artifact_path, path_info);
+}
+
 
 static FOUND_CHANNEL: LazyLock<(
     flume::Sender<CleanupTargetInfo>,
@@ -160,6 +175,30 @@ mod tests {
             Some("permission denied")
         );
     }
+
+    #[test]
+    fn late_scan_results_preserve_claimed_and_removed_targets() {
+        let claimed_path = PathBuf::from("claimed/target");
+        let removed_path = PathBuf::from("removed/target");
+        let discovered_path = PathBuf::from("discovered/target");
+        let mut claimed = target("claimed/target");
+        claimed.is_removing = true;
+        claimed.error_content = Some("already claimed".to_owned());
+        let mut removed = target("removed/target");
+        removed.is_removed = true;
+        let mut project_paths = BTreeMap::from([
+            (claimed_path.clone(), claimed.clone()),
+            (removed_path.clone(), removed.clone()),
+        ]);
+
+        record_scanned_cleanup_target(&mut project_paths, target("claimed/target"));
+        record_scanned_cleanup_target(&mut project_paths, target("removed/target"));
+        record_scanned_cleanup_target(&mut project_paths, target("discovered/target"));
+
+        assert_eq!(project_paths[&claimed_path], claimed);
+        assert_eq!(project_paths[&removed_path], removed);
+        assert!(project_paths.contains_key(&discovered_path));
+    }
 }
 
 #[component]
@@ -219,7 +258,7 @@ fn App() -> Element {
             let found_rx = FOUND_CHANNEL.1.clone();
             while let Ok(path_info) = found_rx.recv_async().await {
                 let mut project_paths_lock = project_paths.write();
-                project_paths_lock.insert(path_info.target.artifact_path.clone(), path_info);
+                record_scanned_cleanup_target(&mut project_paths_lock, path_info);
             }
         }
     });
