@@ -6,10 +6,14 @@
   when duplicate scan results arrive. Cleanup counts and progress use selected items.
 - Name/path search only filters the visible list. Clearly explain that checked
   hidden entries remain selected for Cleanup.
+- Select/deselect all applies only to currently visible, editable rows. Hidden,
+  removing, and removed rows keep their selection; later discoveries default to selected.
 - Discover Cargo target, manifest-backed Node node_modules, and Gradle build
   directories. Delete only the exact discovered artifact path; never project roots.
 - Do not traverse artifact directories. Keep filesystem discovery off the UI thread,
   stream results, bound progress traffic, and support cooperative cancellation.
+- Parse Cargo manifests as TOML and accept top-level package or workspace tables;
+  never detect them with a short prefix or raw substring search.
 - Disable Cleanup during scanning and prevent rescans during deletion.
 - The August design and plan are historical; their former ban on selection is
   superseded by the rules above. Do not remove selection to match old examples.

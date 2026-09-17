@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufReader, Read},
+    io::Read,
     path::{Path, PathBuf},
 };
 use walkdir::{DirEntry, WalkDir};
@@ -54,7 +54,7 @@ pub fn scan_cleanup_targets(
         let project_path = entry.into_path();
         visiting(&project_path);
         let target_path = project_path.join("target");
-        if target_path.is_dir() && cargo_manifest_declares_package(&project_path) {
+        if target_path.is_dir() && cargo_manifest_declares_project(&project_path) {
             found(CleanupTarget {
                 kind: CleanupTargetKind::Target,
                 project_path: project_path.clone(),
@@ -95,7 +95,7 @@ pub async fn remove_cleanup_target(target: &CleanupTarget) -> std::io::Result<()
     tokio::fs::remove_dir_all(&target.artifact_path).await
 }
 
-fn cargo_manifest_declares_package(project_path: &Path) -> bool {
+fn cargo_manifest_declares_project(project_path: &Path) -> bool {
     let manifest_path = project_path.join("Cargo.toml");
     // Do not open pipes, devices, or symlinks while looking for a manifest.
     if !std::fs::symlink_metadata(&manifest_path)
@@ -103,17 +103,21 @@ fn cargo_manifest_declares_package(project_path: &Path) -> bool {
     {
         return false;
     }
-    let Ok(file) = File::open(manifest_path) else {
+    let Ok(mut file) = File::open(manifest_path) else {
         return false;
     };
-    let mut manifest_prefix = String::new();
-    let maximum_manifest_prefix_len = "[package]".len() + 10;
-
-    BufReader::new(file)
-        .take(maximum_manifest_prefix_len as u64)
-        .read_to_string(&mut manifest_prefix)
-        .is_ok()
-        && manifest_prefix.contains("[package]")
+    let mut contents = String::new();
+    if file.read_to_string(&mut contents).is_err() {
+        return false;
+    }
+    let Ok(manifest) = contents.parse::<toml::Value>() else {
+        return false;
+    };
+    // Virtual workspaces own the shared target directory without a package table.
+    // Parse TOML so comments and string values cannot masquerade as project tables.
+    ["package", "workspace"]
+        .iter()
+        .any(|key| manifest.get(*key).is_some_and(toml::Value::is_table))
 }
 
 fn should_descend(entry: &DirEntry) -> bool {
@@ -193,6 +197,53 @@ mod tests {
         let path = root.join(relative);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn discovers_workspace_and_package_manifests_beyond_the_old_prefix() {
+        let temp = tempdir().unwrap();
+        for (name, manifest) in [
+            ("virtual-workspace", "[workspace]\nmembers = []\n"),
+            (
+                "workspace-package",
+                "[workspace]\nmembers = []\n[package]\nname = 'root'\n",
+            ),
+            (
+                "commented-package",
+                "# A long introductory comment before the package table\n\n[package]\nname = 'example'\n",
+            ),
+            (
+                "spaced-workspace",
+                "# Workspace configuration\n[ workspace ] # shared artifacts\nmembers = []\n",
+            ),
+        ] {
+            let project = directory(temp.path(), name);
+            fs::write(project.join("Cargo.toml"), manifest).unwrap();
+            directory(&project, "target");
+            let targets = discover_cleanup_targets(&project);
+            assert_eq!(targets.len(), 1, "{name}");
+            assert_eq!(targets[0].artifact_path, project.join("target"));
+            assert_eq!(targets[0].kind, CleanupTargetKind::Target);
+        }
+    }
+
+    #[test]
+    fn does_not_treat_comments_strings_or_invalid_toml_as_project_tables() {
+        let temp = tempdir().unwrap();
+        for (name, manifest) in [
+            ("comment", "# [package]\n# [workspace]\n"),
+            ("string", "description = '''\n[workspace]\n[package]\n'''\n"),
+            ("scalar", "workspace = 'not a table'\n"),
+            ("nested", "[metadata.package]\nname = 'not a project'\n"),
+            ("invalid", "[workspace]\nmembers = [\n"),
+        ] {
+            let project = directory(temp.path(), name);
+            fs::write(project.join("Cargo.toml"), manifest).unwrap();
+            directory(&project, "target");
+            assert!(discover_cleanup_targets(&project).is_empty(), "{name}");
+        }
+        directory(temp.path(), "missing-manifest/target");
+        assert!(discover_cleanup_targets(temp.path()).is_empty());
     }
 
     #[test]

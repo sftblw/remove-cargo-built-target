@@ -3840,6 +3840,7 @@ dependencies = [
  "rfd 0.15.3",
  "tempfile",
  "tokio",
+ "toml",
  "walkdir",
 ]
 

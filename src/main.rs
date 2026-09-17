@@ -328,6 +328,35 @@ fn App() -> Element {
             .map(|(path, info)| (path.clone(), info.clone()))
             .collect::<Vec<_>>()
     });
+    let visible_selection_counts = use_memo(move || {
+        visible_paths
+            .read()
+            .iter()
+            .filter(|(_, info)| !info.is_removed && !info.is_removing)
+            .fold((0_usize, 0_usize), |(selected, unselected), (_, info)| {
+                if info.include_in_cleanup {
+                    (selected + 1, unselected)
+                } else {
+                    (selected, unselected + 1)
+                }
+            })
+    });
+    let mut set_visible_selection = move |include: bool| {
+        // Snapshot only the rows visible at click time, before writing their state.
+        let paths = visible_paths
+            .read()
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        let mut targets = project_paths.write();
+        for path in paths {
+            if let Some(info) = targets.get_mut(&path) {
+                if !info.is_removed && !info.is_removing {
+                    info.include_in_cleanup = include;
+                }
+            }
+        }
+    };
     let removed_paths = use_memo(move || {
         project_paths()
             .iter()
@@ -576,6 +605,22 @@ fn App() -> Element {
                                 value: search(),
                                 oninput: move |event| search.set(event.value()),
                                 placeholder: "Search project name or path…",
+                            }
+                        }
+                        div {
+                            class: "flex flex-wrap items-center gap-3",
+                            span { class: "text-xs text-slate-500", "Visible items" }
+                            button {
+                                class: "rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 disabled:cursor-not-allowed disabled:opacity-40",
+                                disabled: visible_selection_counts().1 == 0,
+                                onclick: move |_| set_visible_selection(true),
+                                "Select all visible"
+                            }
+                            button {
+                                class: "rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 disabled:cursor-not-allowed disabled:opacity-40",
+                                disabled: visible_selection_counts().0 == 0,
+                                onclick: move |_| set_visible_selection(false),
+                                "Deselect all visible"
                             }
                         }
                         div {

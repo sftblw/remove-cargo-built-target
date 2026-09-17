@@ -17,6 +17,7 @@ open = "5.3.2"
 rfd = { version = "0.15.3", default-features = false, features = ["tokio", "xdg-portal"] }
 tokio = { version = "~1", features = ["full"] }
 walkdir = "2.5.0"
+toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
