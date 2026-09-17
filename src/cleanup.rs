@@ -9,6 +9,7 @@ use walkdir::{DirEntry, WalkDir};
 pub enum CleanupTargetKind {
     Target,
     NodeModules,
+    GradleBuild,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -19,38 +20,75 @@ pub struct CleanupTarget {
 }
 
 pub fn discover_cleanup_targets(base_path: &Path) -> Vec<CleanupTarget> {
+    let mut targets = Vec::new();
+    scan_cleanup_targets(base_path, || false, |_| {}, |target| targets.push(target));
+    targets.sort_by(|left, right| left.artifact_path.cmp(&right.artifact_path));
+    targets
+}
+
+/// Callbacks run on the scanning thread. Check cancellation before advancing the walker.
+pub fn scan_cleanup_targets(
+    base_path: &Path,
+    cancelled: impl Fn() -> bool,
+    mut visiting: impl FnMut(&Path),
+    mut found: impl FnMut(CleanupTarget),
+) {
     let walker = WalkDir::new(base_path)
         .into_iter()
         .filter_entry(should_descend);
-    let mut targets = Vec::new();
 
-    for entry in walker.filter_map(Result::ok) {
+    let mut walker = walker;
+    while !cancelled() {
+        let Some(entry) = walker.next() else { break };
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!("Scan: {error}");
+                continue;
+            }
+        };
         if !entry.file_type().is_dir() {
             continue;
         }
 
         let project_path = entry.into_path();
+        visiting(&project_path);
         let target_path = project_path.join("target");
-        if cargo_manifest_declares_package(&project_path) && target_path.is_dir() {
-            targets.push(CleanupTarget {
+        if target_path.is_dir() && cargo_manifest_declares_package(&project_path) {
+            found(CleanupTarget {
                 kind: CleanupTargetKind::Target,
                 project_path: project_path.clone(),
                 artifact_path: target_path,
             });
         }
 
+        let build_path = project_path.join("build");
+        if build_path.is_dir()
+            && [
+                "build.gradle",
+                "build.gradle.kts",
+                "settings.gradle",
+                "settings.gradle.kts",
+            ]
+            .iter()
+            .any(|marker| project_path.join(marker).is_file())
+        {
+            found(CleanupTarget {
+                kind: CleanupTargetKind::GradleBuild,
+                project_path: project_path.clone(),
+                artifact_path: build_path,
+            });
+        }
+
         let node_modules_path = project_path.join("node_modules");
         if project_path.join("package.json").is_file() && node_modules_path.is_dir() {
-            targets.push(CleanupTarget {
+            found(CleanupTarget {
                 kind: CleanupTargetKind::NodeModules,
                 project_path,
                 artifact_path: node_modules_path,
             });
         }
     }
-
-    targets.sort_by(|left, right| left.artifact_path.cmp(&right.artifact_path));
-    targets
 }
 
 pub async fn remove_cleanup_target(target: &CleanupTarget) -> std::io::Result<()> {
@@ -58,7 +96,14 @@ pub async fn remove_cleanup_target(target: &CleanupTarget) -> std::io::Result<()
 }
 
 fn cargo_manifest_declares_package(project_path: &Path) -> bool {
-    let Ok(file) = File::open(project_path.join("Cargo.toml")) else {
+    let manifest_path = project_path.join("Cargo.toml");
+    // Do not open pipes, devices, or symlinks while looking for a manifest.
+    if !std::fs::symlink_metadata(&manifest_path)
+        .is_ok_and(|metadata| metadata.file_type().is_file())
+    {
+        return false;
+    }
+    let Ok(file) = File::open(manifest_path) else {
         return false;
     };
     let mut manifest_prefix = String::new();
@@ -151,6 +196,43 @@ mod tests {
     }
 
     #[test]
+    fn streaming_scan_can_cancel_after_a_discovery() {
+        let temp = tempdir().unwrap();
+        for name in ["first", "second"] {
+            let project = directory(temp.path(), name);
+            fs::write(project.join("package.json"), "{}").unwrap();
+            directory(&project, "node_modules");
+        }
+        let cancelled = std::cell::Cell::new(false);
+        let mut targets = Vec::new();
+        scan_cleanup_targets(
+            temp.path(),
+            || cancelled.get(),
+            |_| {},
+            |target| {
+                targets.push(target);
+                cancelled.set(true);
+            },
+        );
+        assert_eq!(targets.len(), 1);
+    }
+
+    #[test]
+    fn gradle_requires_a_marker_and_does_not_scan_build_contents() {
+        let temp = tempdir().unwrap();
+        let project = directory(temp.path(), "gradle");
+        fs::write(project.join("build.gradle.kts"), "").unwrap();
+        let nested = directory(&project, "build/nested");
+        fs::write(nested.join("package.json"), "{}").unwrap();
+        directory(&nested, "node_modules");
+        directory(temp.path(), "orphan/build");
+        let targets = discover_cleanup_targets(temp.path());
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].kind, CleanupTargetKind::GradleBuild);
+        assert_eq!(targets[0].artifact_path, project.join("build"));
+    }
+
+    #[test]
     fn discovers_only_manifest_backed_artifacts() {
         let temp = tempdir().unwrap();
         let root = temp.path();
@@ -182,8 +264,7 @@ mod tests {
         let targets = discover_cleanup_targets(root);
         assert_eq!(targets.len(), 4);
         assert!(targets.iter().any(|target| {
-            target.kind == CleanupTargetKind::Target
-                && target.artifact_path == cargo.join("target")
+            target.kind == CleanupTargetKind::Target && target.artifact_path == cargo.join("target")
         }));
         assert!(targets.iter().any(|target| {
             target.kind == CleanupTargetKind::NodeModules

@@ -1,6 +1,6 @@
 # Dioxus 0.7.10 and Node Modules Cleanup Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Historical implementation plan. Current maintenance requirements are in `AGENTS.md`.
 
 **Goal:** Upgrade the desktop application to Dioxus 0.7.10 and safely discover and remove Cargo `target` plus manifest-backed Node `node_modules` directories.
 
@@ -15,7 +15,7 @@
 - Do not recurse into `target` or `node_modules` directories.
 - Delete only the exact artifact path held by a discovered record.
 - A failed or missing deletion must remain not removed and expose its error.
-- Retain one global Cleanup action; do not add per-item deletion, selection, confirmation, or package-manager behavior.
+- Retain one global Cleanup action. Per-item Include checkboxes and name/path search are supported; unchecked artifacts must not be deleted. Per-item deletion, confirmation dialogs, and package-manager behavior remain outside this change.
 
 ---
 

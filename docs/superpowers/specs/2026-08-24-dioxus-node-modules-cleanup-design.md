@@ -1,5 +1,8 @@
 # Dioxus 0.7.10 and Node Modules Cleanup Design
 
+> Historical design, amended September 17: selection and name/path filtering are
+> supported, alongside the existing local Gradle build cleanup. See `AGENTS.md`.
+
 ## Goal
 
 Upgrade the desktop application from Dioxus 0.6.3 to Dioxus 0.7.10 and allow it to discover and remove both Rust `target` directories and Node `node_modules` directories beneath a user-selected base directory.
@@ -11,12 +14,12 @@ Upgrade the desktop application from Dioxus 0.6.3 to Dioxus 0.7.10 and allow it 
   - a Cargo `Cargo.toml` with a `[package]` section and a direct `target` child directory; or
   - a Node `package.json` and a direct `node_modules` child directory.
 - Represent each target directory as an independent list entry. A directory containing both manifests may contribute both a `target` and a `node_modules` entry.
-- Preserve the existing single global Cleanup action. It deletes every currently discovered target.
+- Preserve the existing single global Cleanup action. It deletes selected pending targets after scanning finishes or is cancelled.
 - Update the user-visible title, status text, and README so the application describes both target kinds.
 
 ## Non-goals
 
-- No per-item delete control, selection UI, confirmation dialog, package-manager integration, or manifest parsing beyond the current Cargo `[package]` check.
+- No per-item delete control, confirmation dialog, package-manager integration, or manifest parsing beyond the current Cargo `[package]` check. Per-item selection is supported.
 - No deletion of an arbitrary directory merely because it is named `node_modules`; its parent must contain `package.json`.
 - No recursion into `target` or `node_modules` contents.
 
@@ -40,7 +43,7 @@ The cleanup action iterates the discovered target records and asynchronously inv
 
 ## User Interface
 
-The list shows the target kind and the project root. Its status distinguishes an existing artifact, a successful deletion, and a deletion error. Open continues to open the project root. The global Cleanup button retains its existing role and acts on all currently listed entries.
+The list shows the target kind and the project root. Its status distinguishes an existing artifact, an excluded artifact, an in-progress deletion, a successful deletion, and a deletion error. Open continues to open the project root. Include checkboxes default to checked and are disabled during and after deletion. Cleanup acts on selected pending entries, including those hidden by name/path search. Progress counts selected entries only.
 
 ## Dioxus Compatibility
 

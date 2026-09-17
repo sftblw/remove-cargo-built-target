@@ -1,17 +1,27 @@
-# Remove Cargo target and Node node_modules recursively
+# Clean Cargo, Gradle, and Node build directories
 
 that's it.
 
-1. Find Cargo projects with a `target` directory and Node projects with a `node_modules` directory.
-2. A Node cleanup target requires a sibling `package.json`; arbitrary `node_modules` directories are ignored.
-3. Remove the discovered artifact directories.
+1. Select a directory and click **Find Paths** to discover Cargo `target`, Gradle `build`, and Node `node_modules` directories.
+2. Each artifact needs a sibling project manifest. A Node target requires `package.json`; Gradle requires a build/settings `.gradle` or `.gradle.kts` file.
+3. Search by name or path, then uncheck **Include** for artifacts you want to keep.
+4. Click **Cleanup (count)** after scanning finishes (or Abort completes). Only checked, pending artifacts are deleted. Removing and deleted rows cannot be unchecked.
+
+Search filters the display only: checked hidden rows still count toward Cleanup.
+Selections last for the current scan; starting a new scan checks all discovered artifacts again.
+Results appear during scanning. Abort requests cancellation between filesystem operations;
+an operating-system filesystem call that is already blocked must return before cancellation finishes.
 
 I tried to be careful but use at your own risk
 
 ![](./readme/screenshot.png)
 
-It's ordinary Rust program so cargo run would work;<br/>
-but It's also using Dioxus so you can refer to its
+Styling uses Tailwind CSS 4 utility classes in `src/main.rs`. The root
+`tailwind.css` is the input; Dioxus 0.7 automatically generates
+`assets/tailwind.css` during `dx serve` / `dx build`. Do not edit the generated
+stylesheet. It is included so checks can also run before the first DX build.
+
+Use Dioxus for the application and stylesheet workflow:
 
 - `dx serve` for dev,
 - `dx bundle` for making installable something

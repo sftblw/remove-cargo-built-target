@@ -1,6 +1,7 @@
 [bundle]
 identifier = "moe.sftblw.remove-cargo-built-target"
 publisher = "sftblw"
+icon = ["assets/icon.png"]
 
 [application]
 
